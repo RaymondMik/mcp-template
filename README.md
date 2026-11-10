@@ -1,6 +1,6 @@
 # MCP Chat
 
-MCP Chat is a command-line interface application that enables interactive chat capabilities with AI models through the Anthropic API. The application supports document retrieval, command-based prompts, and extensible tool integrations via the MCP (Model Control Protocol) architecture.
+MCP Chat is a command-line interface application that enables interactive chat capabilities with AI models through the Anthropic API. The application answers questions about 1980s movies stored in PostgreSQL and supports movie mentions, command-based prompts, and extensible tool integrations via the MCP (Model Control Protocol) architecture.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ Documents are stored in PostgreSQL, run with Docker Compose:
 docker compose up -d
 ```
 
-On its first start the container runs `db/init.sql`, which creates the `documents` table and adds the sample documents. The database is exposed on host port **5433** so it doesn't clash with a local Postgres on 5432.
+On its first start the container runs `db/init.sql`, which creates the `movies` table and adds 100 popular 1980s movies (title, year, genre, description and a random 0–10 rating). The database is exposed on host port **5433** so it doesn't clash with a local Postgres on 5432.
 
 ### Step 2: Install dependencies
 
@@ -87,33 +87,37 @@ python main.py
 
 Simply type your message and press Enter to chat with the model.
 
-### Document Retrieval
+### Movie Mentions
 
-Use the @ symbol followed by a document ID to include document content in your query:
+Use the @ symbol followed by a movie title to include that movie's details in your query. Titles can contain spaces, and matching ignores case:
 
 ```
-> Tell me about @deposition.md
+> Tell me about @Back to the Future
 ```
+
+You can also ask Claude to look up a movie or change its rating; only the rating can be edited.
 
 ### Commands
 
 Use the / prefix to execute commands defined in the MCP server:
 
 ```
-> /summarize deposition.md
+> /summarize_description Ferris Bueller's Day Off
 ```
 
-Commands will auto-complete when you press Tab.
+`/summarize_description` shows the movie's description in 50 words or fewer; the stored description is not changed. Commands and movie titles auto-complete when you press Tab.
 
 ## Development
 
-### Adding New Documents
+### Adding New Movies
 
-Insert rows into the `documents` table (`id`, `content`), for example:
+Insert rows into the `movies` table, for example:
 
 ```bash
-docker compose exec db psql -U mcp mcp_docs -c "INSERT INTO documents VALUES ('notes.txt', 'Some notes')"
+docker compose exec db psql -U mcp mcp_docs -c "INSERT INTO movies (title, release_year, genre, description, rating) VALUES ('Tremors', 1990, 'Horror', 'Desert townsfolk battle giant underground worms.', 7.5)"
 ```
+
+Note that `release_year` must be between 1980 and 1989.
 
 To change the seed data, edit `db/init.sql`. It only runs automatically when the volume is empty; you can run it again with `docker compose exec -T db psql -U mcp mcp_docs < db/init.sql`, or reset everything with `docker compose down -v`.
 

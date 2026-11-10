@@ -1,5 +1,6 @@
 
 import os
+from urllib.parse import unquote
 from dotenv import load_dotenv
 from pydantic import Field
 from psycopg.rows import dict_row
@@ -23,15 +24,32 @@ async def _pool() -> AsyncConnectionPool:
     return pool
 
 
-async def _fetch_content(doc_id: str) -> str:
+async def _movies_with_title(title: str) -> list[dict]:
+    """All movies whose title matches exactly (case-insensitive)."""
     async with (await _pool()).connection() as conn:
-        cur = await conn.execute(
-            "SELECT content FROM documents WHERE id = %s", (doc_id,)
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            SELECT title, release_year, genre, description, rating::float AS rating
+            FROM movies
+            WHERE lower(title) = lower(%s)
+            ORDER BY release_year
+            """,
+            (title.strip(),),
         )
-        row = await cur.fetchone()
-    if row is None:
-        raise ValueError(f"Document with ID '{doc_id}' not found.")
-    return row[0]
+        rows = await cur.fetchall()
+    if not rows:
+        raise ValueError(f"No movie titled '{title}' found.")
+    return rows
+
+
+def _format_movie(movie: dict) -> str:
+    return (
+        f"Title: {movie['title']}\n"
+        f"Year: {movie['release_year']}\n"
+        f"Genre: {movie['genre']}\n"
+        f"Rating: {movie['rating']}/10\n"
+        f"Description: {movie['description']}"
+    )
 
 
 @mcp.tool(
@@ -127,46 +145,51 @@ async def update_movie_rating(
 
 
 @mcp.resource(
-    "docs://documents",
+    "movies://titles",
     mime_type="application/json"
 )
-async def list_docs() -> list[str]:
+async def list_movie_titles() -> list[str]:
     async with (await _pool()).connection() as conn:
-        cur = await conn.execute("SELECT id FROM documents ORDER BY id")
+        cur = await conn.execute("SELECT DISTINCT title FROM movies ORDER BY title")
         return [row[0] for row in await cur.fetchall()]
 
 
+# Titles contain spaces and punctuation, so clients percent-encode them in the
+# URI (e.g. movies://titles/Die%20Hard). FastMCP passes the raw path segment
+# through, so decode it here.
 @mcp.resource(
-    "docs://documents/{doc_id}",
+    "movies://titles/{title}",
     mime_type="text/plain"
 )
-async def get_doc_contents(doc_id: str) -> str:
-    return await _fetch_content(doc_id)
+async def get_movie(title: str) -> str:
+    movies = await _movies_with_title(unquote(title))
+    return "\n\n".join(_format_movie(m) for m in movies)
 
-# TASK: Write a prompt to rewrite a doc in markdown format
+
 @mcp.prompt(
-    name="format",
-    description="Rewrite the contents of a document in Markdown format"
+    name="summarize_description",
+    description="Summarize a movie's description in 50 words or fewer"
 )
-
-def format_document(
-    doc_id: str = Field(description="The ID of the document to format")
+async def summarize_description(
+    title: str = Field(description="The exact title of the movie to summarize")
 ) -> list[base.Message]:
+    movies = await _movies_with_title(title)
+    details = "\n\n".join(_format_movie(m) for m in movies)
+
     prompt = f"""
-    Your goal is to reformat a document to be written with markdown syntax.
+    Summarize the description of the movie below in 50 words or fewer.
 
-    The id. of the document you need to reformat is:
-    <document_id>
-    {doc_id}
-    </document_id>
+    <movie>
+    {details}
+    </movie>
 
-    Add in headers, bullet points, tables, etc as necessary.
-    Use the 'write_doc_contents' tool to edit the document.
+    Reply with only the summary. Keep it accurate to the stored description
+    and don't invent plot details. If several movies are listed, write one
+    summary per movie, each labeled with its title and year.
+    The stored description must not be changed, so don't call any tools.
     """
 
     return [base.UserMessage(prompt)]
-
-# TASK: Write a prompt to summarize a doc
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
