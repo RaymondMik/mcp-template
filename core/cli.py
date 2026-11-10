@@ -83,31 +83,18 @@ class UnifiedCompleter(Completer):
                         )
                 return
 
-            if len(parts) == 1 and text.endswith(" "):
-                cmd = parts[0]
-
-                if cmd in self.prompt_dict:
-                    for id in self.resources:
+            # The argument is a movie title, which may contain spaces, so
+            # complete against everything after "/<command> ".
+            cmd, _, title_prefix = text_before_cursor[1:].partition(" ")
+            if cmd in self.prompt_dict:
+                for title in self.resources:
+                    if title.lower().startswith(title_prefix.lower()):
                         yield Completion(
-                            id,
-                            start_position=0,
-                            display=id,
+                            title,
+                            start_position=-len(title_prefix),
+                            display=title,
                         )
-                return
-
-            if len(parts) >= 2:
-                doc_prefix = parts[-1]
-
-                for resource in self.resources:
-                    if "id" in resource and resource["id"].lower().startswith(
-                        doc_prefix.lower()
-                    ):
-                        yield Completion(
-                            resource["id"],
-                            start_position=-len(doc_prefix),
-                            display=resource["id"],
-                        )
-                return
+            return
 
 
 class CliApp:
@@ -182,7 +169,7 @@ class CliApp:
 
     async def refresh_resources(self):
         try:
-            self.resources = await self.agent.list_docs_ids()
+            self.resources = await self.agent.list_movie_titles()
             self.completer.update_resources(self.resources)
         except Exception as e:
             print(f"Error refreshing resources: {e}")
@@ -208,3 +195,6 @@ class CliApp:
 
             except KeyboardInterrupt:
                 break
+            except Exception as e:
+                # e.g. an unknown movie title passed to a /command
+                print(f"\nError: {e}")

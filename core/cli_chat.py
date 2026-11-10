@@ -1,4 +1,5 @@
 from typing import List, Tuple
+from urllib.parse import quote
 from mcp.types import Prompt, PromptMessage
 from anthropic.types import MessageParam
 
@@ -21,43 +22,50 @@ class CliChat(Chat):
     async def list_prompts(self) -> list[Prompt]:
         return await self.doc_client.list_prompts()
 
-    async def list_docs_ids(self) -> list[str]:
-        return await self.doc_client.read_resource("docs://documents")
+    async def list_movie_titles(self) -> list[str]:
+        return await self.doc_client.read_resource("movies://titles")
 
-    async def get_doc_content(self, doc_id: str) -> str:
-        return await self.doc_client.read_resource(f"docs://documents/{doc_id}")
+    async def get_movie(self, title: str) -> str:
+        # Titles contain spaces and punctuation; encode them as one path segment.
+        return await self.doc_client.read_resource(
+            f"movies://titles/{quote(title, safe='')}"
+        )
 
     async def get_prompt(
-        self, command: str, doc_id: str
+        self, command: str, title: str
     ) -> list[PromptMessage]:
-        return await self.doc_client.get_prompt(command, {"doc_id": doc_id})
+        return await self.doc_client.get_prompt(command, {"title": title})
 
     async def _extract_resources(self, query: str) -> str:
-        mentions = [word[1:] for word in query.split() if word.startswith("@")]
+        # Titles can span several words ("@Back to the Future Part II"), so look
+        # for "@<title>" in the query instead of splitting it on spaces. Longest
+        # titles go first, so "@Back to the Future Part II" isn't also read as
+        # "@Back to the Future".
+        remaining = query.lower()
+        mentioned: list[Tuple[str, str]] = []
 
-        doc_ids = await self.list_docs_ids()
-        mentioned_docs: list[Tuple[str, str]] = []
-
-        for doc_id in doc_ids:
-            if doc_id in mentions:
-                content = await self.get_doc_content(doc_id)
-                mentioned_docs.append((doc_id, content))
+        titles = await self.list_movie_titles()
+        for title in sorted(titles, key=len, reverse=True):
+            needle = f"@{title.lower()}"
+            if needle in remaining:
+                remaining = remaining.replace(needle, " ")
+                mentioned.append((title, await self.get_movie(title)))
 
         return "".join(
-            f'\n<document id="{doc_id}">\n{content}\n</document>\n'
-            for doc_id, content in mentioned_docs
+            f'\n<movie title="{title}">\n{content}\n</movie>\n'
+            for title, content in mentioned
         )
 
     async def _process_command(self, query: str) -> bool:
         if not query.startswith("/"):
             return False
 
-        words = query.split()
-        command = words[0].replace("/", "")
+        command, _, title = query[1:].partition(" ")
+        title = title.strip()
+        if not title:
+            raise ValueError(f"Usage: /{command} <movie title>")
 
-        messages = await self.doc_client.get_prompt(
-            command, {"doc_id": words[1]}
-        )
+        messages = await self.doc_client.get_prompt(command, {"title": title})
 
         self.messages += convert_prompt_messages_to_message_params(messages)
         return True
@@ -79,9 +87,9 @@ class CliChat(Chat):
         {added_resources}
         </context>
 
-        Note the user's query might contain references to documents like "@report.docx". The "@" is only
-        included as a way of mentioning the doc. The actual name of the document would be "report.docx".
-        If the document content is included in this prompt, you don't need to use an additional tool to read the document.
+        Note the user's query might mention movies like "@Die Hard". The "@" is only
+        included as a way of mentioning the movie. The actual title of the movie would be "Die Hard".
+        If the movie's details are included in this prompt, you don't need to use an additional tool to look it up.
         Answer the user's question directly and concisely. Start with the exact information they need. 
         Don't refer to or mention the provided context in any way - just use it to inform your answer.
         """
