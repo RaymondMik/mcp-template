@@ -15,7 +15,19 @@ MCP Chat is a command-line interface application that enables interactive chat c
 
 ```
 ANTHROPIC_API_KEY=""  # Enter your Anthropic API secret key
+CLAUDE_MODEL=""       # The Claude model ID to use
+DATABASE_URL="postgresql://mcp:mcp@localhost:5433/mcp_docs"
 ```
+
+### Step 1b: Start the PostgreSQL database
+
+Documents are stored in PostgreSQL, run with Docker Compose:
+
+```bash
+docker compose up -d
+```
+
+On its first start the container runs `db/init.sql`, which creates the `documents` table and adds the sample documents. The database is exposed on host port **5433** so it doesn't clash with a local Postgres on 5432.
 
 ### Step 2: Install dependencies
 
@@ -60,7 +72,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 2. Install dependencies:
 
 ```bash
-pip install anthropic python-dotenv prompt-toolkit "mcp[cli]==1.8.0"
+pip install anthropic python-dotenv prompt-toolkit "mcp[cli]>=1.8.0" "psycopg[binary,pool]>=3.2"
 ```
 
 3. Run the project
@@ -97,7 +109,13 @@ Commands will auto-complete when you press Tab.
 
 ### Adding New Documents
 
-Edit the `mcp_server.py` file to add new documents to the `docs` dictionary.
+Insert rows into the `documents` table (`id`, `content`), for example:
+
+```bash
+docker compose exec db psql -U mcp mcp_docs -c "INSERT INTO documents VALUES ('notes.txt', 'Some notes')"
+```
+
+To change the seed data, edit `db/init.sql`. It only runs automatically when the volume is empty; you can run it again with `docker compose exec -T db psql -U mcp mcp_docs < db/init.sql`, or reset everything with `docker compose down -v`.
 
 ### Implementing MCP Features
 

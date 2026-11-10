@@ -1,70 +1,82 @@
 
+import os
+from dotenv import load_dotenv
 from pydantic import Field
+from psycopg_pool import AsyncConnectionPool
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base
 
+# The MCP stdio client does not pass the parent's environment to this
+# subprocess, so load DATABASE_URL from .env here.
+load_dotenv()
+
 mcp = FastMCP("DocumentMCP", log_level="ERROR")
 
+pool = AsyncConnectionPool(os.environ["DATABASE_URL"], open=False)
 
-docs = {
-    "deposition.md": "This deposition covers the testimony of Angela Smith, P.E.",
-    "report.pdf": "The report details the state of a 20m condenser tower.",
-    "financials.docx": "These financials outline the project's budget and expenditures.",
-    "outlook.pdf": "This document presents the projected future performance of the system.",
-    "plan.md": "The plan outlines the steps for the project's implementation.",
-    "spec.txt": "These specifications define the technical requirements for the equipment.",
-}
 
-# TASK: Write a tool to read a doc
+async def _pool() -> AsyncConnectionPool:
+    """Open the connection pool on first use."""
+    if pool.closed:
+        await pool.open()
+    return pool
+
+
+async def _fetch_content(doc_id: str) -> str:
+    async with (await _pool()).connection() as conn:
+        cur = await conn.execute(
+            "SELECT content FROM documents WHERE id = %s", (doc_id,)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        raise ValueError(f"Document with ID '{doc_id}' not found.")
+    return row[0]
+
+
 @mcp.tool(
     name="read_doc_contents",
     description="Read the contents of a document"
 )
-
-def read_document(
+async def read_document(
     doc_id: str = Field(description="The ID of the document to read")
 ):
-    if doc_id not in docs:
-        raise ValueError(f"Document with ID '{doc_id}' not found.")
-    return docs[doc_id]
+    return await _fetch_content(doc_id)
 
-# TASK: Write a tool to edit a doc
+
 @mcp.tool(
     name="write_doc_contents",
     description="Edit a document by replacing a string in the documents content",
 )
-
-def edit_document(
+async def edit_document(
     doc_id: str = Field(description="The ID of the document that will be edited"),
-    old_string: str = Field(description="The text to replace. Must macth exactly, including white space"),
+    old_string: str = Field(description="The text to replace. Must match exactly, including white space"),
     new_string: str = Field(description="The new text to add in place of the old text")
 ):
-    if doc_id not in docs:
-        raise ValueError(f"Document with ID '{doc_id}' not found.")
-    
-    docs[doc_id] = docs[doc_id].replace(old_string, new_string)
+    async with (await _pool()).connection() as conn:
+        cur = await conn.execute(
+            "UPDATE documents SET content = replace(content, %s, %s) WHERE id = %s",
+            (old_string, new_string, doc_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"Document with ID '{doc_id}' not found.")
 
-# TASK: Write a resource to return all doc id's
+
 @mcp.resource(
     "docs://documents",
     mime_type="application/json"
 )
+async def list_docs() -> list[str]:
+    async with (await _pool()).connection() as conn:
+        cur = await conn.execute("SELECT id FROM documents ORDER BY id")
+        return [row[0] for row in await cur.fetchall()]
 
-def list_docs() -> list[str]:
-    return list(docs.keys())
 
-# TASK: Write a resource to return the contents of a particular doc
 @mcp.resource(
     "docs://documents/{doc_id}",
     mime_type="text/plain"
 )
-
-def get_doc_contents(
-    doc_id: str
-) -> str:
-    if doc_id not in docs:
-        raise ValueError(f"Document with ID '{doc_id}' not found.")
-    return docs[doc_id]
+async def get_doc_contents(doc_id: str) -> str:
+    return await _fetch_content(doc_id)
 
 # TASK: Write a prompt to rewrite a doc in markdown format
 @mcp.prompt(
@@ -84,7 +96,7 @@ def format_document(
     </document_id>
 
     Add in headers, bullet points, tables, etc as necessary.
-    Use the 'edit_document' tool to edit the document.
+    Use the 'write_doc_contents' tool to edit the document.
     """
 
     return [base.UserMessage(prompt)]
