@@ -2,6 +2,7 @@
 import os
 from dotenv import load_dotenv
 from pydantic import Field
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base
@@ -34,13 +35,44 @@ async def _fetch_content(doc_id: str) -> str:
 
 
 @mcp.tool(
-    name="read_doc_contents",
-    description="Read the contents of a document"
+    name="get_movie_by_title",
+    description=(
+        "Look up 1980s movies by title (case-insensitive). Returns exact title "
+        "matches if there are any, otherwise movies whose title contains the "
+        "given text. Each result has title, release_year, genre, description "
+        "and rating (0-10)."
+    ),
 )
-async def read_document(
-    doc_id: str = Field(description="The ID of the document to read")
-):
-    return await _fetch_content(doc_id)
+async def get_movie_by_title(
+    title: str = Field(description="The movie title, or part of it, to search for")
+) -> list[dict]:
+    title = title.strip()
+    if not title:
+        raise ValueError("Title must not be empty.")
+
+    async with (await _pool()).connection() as conn:
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            SELECT title, release_year, genre, description, rating::float AS rating
+            FROM movies
+            WHERE title ILIKE '%%' || %(pattern)s || '%%'
+            ORDER BY lower(title) = lower(%(title)s) DESC, release_year, title
+            LIMIT 20
+            """,
+            {
+                "title": title,
+                # Escape LIKE wildcards so they match literally.
+                "pattern": title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"),
+            },
+        )
+        rows = await cur.fetchall()
+
+    exact = [r for r in rows if r["title"].lower() == title.lower()]
+    if exact:
+        return exact
+    if not rows:
+        raise ValueError(f"No movie found with a title matching '{title}'.")
+    return rows
 
 
 @mcp.tool(
