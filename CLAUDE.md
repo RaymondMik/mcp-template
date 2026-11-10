@@ -39,6 +39,10 @@ There are no tests, linters, or type checks.
 - `/command doc_id`: calls `get_prompt(command, {"doc_id": ...})` and converts the returned MCP `PromptMessage`s into Anthropic `MessageParam`s. Every prompt is assumed to take a single `doc_id` argument.
 - `CliApp` (prompt_toolkit) fills tab completion from `list_prompts()` and the doc ID resource when the app starts.
 
-**Server (`mcp_server.py`):** FastMCP with async handlers. Documents live in the PostgreSQL `documents(id TEXT PRIMARY KEY, content TEXT)` table. Access goes through a `psycopg_pool.AsyncConnectionPool` that opens on first use. `write_doc_contents` is a single `UPDATE ... replace(...)` statement. The schema and seed data are in `db/init.sql`, and Docker runs that script only when the volume is empty (`docker compose down -v` resets it). The tool, resource, and prompt names/URIs are contracts that the client code depends on. If you rename `docs://documents`, `docs://documents/{doc_id}`, or a prompt's `doc_id` parameter, update `cli_chat.py` too.
+**Server (`mcp_server.py`):** FastMCP with async handlers. Access goes through a `psycopg_pool.AsyncConnectionPool` that opens on first use. The project is being moved from documents to movies, so the server currently uses two tables:
+- **`movies`** (`title, release_year, genre, description, rating`, seeded from `db/init.sql`): used by the tools. `get_movie_by_title` looks up movies (case-insensitive; exact matches first, otherwise partial matches). `update_movie_rating` changes only the rating. It needs an exact title, plus `release_year` when several movies share that title.
+- **`documents`**: still used by the `docs://` resources and the `format` prompt. That table no longer exists in `db/init.sql`.
+
+Docker runs `db/init.sql` only when the volume is empty (`docker compose down -v` resets it). The tool, resource, and prompt names/URIs are contracts that the client code depends on. If you rename `docs://documents`, `docs://documents/{doc_id}`, or a prompt's `doc_id` parameter, update `cli_chat.py` too.
 
 `core/claude.py` is a thin wrapper around `anthropic.Anthropic().messages.create` plus helpers for appending messages.

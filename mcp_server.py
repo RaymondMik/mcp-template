@@ -76,21 +76,54 @@ async def get_movie_by_title(
 
 
 @mcp.tool(
-    name="write_doc_contents",
-    description="Edit a document by replacing a string in the documents content",
+    name="update_movie_rating",
+    description=(
+        "Change the rating of a movie, identified by its exact title "
+        "(case-insensitive). Only the rating can be changed. If several "
+        "movies share the title, release_year is required. Returns the "
+        "updated movie."
+    ),
 )
-async def edit_document(
-    doc_id: str = Field(description="The ID of the document that will be edited"),
-    old_string: str = Field(description="The text to replace. Must match exactly, including white space"),
-    new_string: str = Field(description="The new text to add in place of the old text")
-):
+async def update_movie_rating(
+    title: str = Field(description="The exact title of the movie to update"),
+    rating: float = Field(ge=0, le=10, description="The new rating, from 0 to 10 (stored with one decimal)"),
+    release_year: int | None = Field(
+        default=None,
+        description="Release year, only needed when several movies share the title",
+    ),
+) -> dict:
+    title = title.strip()
     async with (await _pool()).connection() as conn:
-        cur = await conn.execute(
-            "UPDATE documents SET content = replace(content, %s, %s) WHERE id = %s",
-            (old_string, new_string, doc_id),
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            SELECT id, title, release_year FROM movies
+            WHERE lower(title) = lower(%(title)s)
+              AND (%(year)s::int IS NULL OR release_year = %(year)s::int)
+            """,
+            {"title": title, "year": release_year},
         )
-        if cur.rowcount == 0:
-            raise ValueError(f"Document with ID '{doc_id}' not found.")
+        matches = await cur.fetchall()
+
+        if not matches:
+            year = f" ({release_year})" if release_year is not None else ""
+            raise ValueError(
+                f"No movie titled '{title}'{year} found. Use get_movie_by_title to find the exact title."
+            )
+        if len(matches) > 1:
+            years = ", ".join(str(m["release_year"]) for m in matches)
+            raise ValueError(
+                f"Several movies are titled '{title}' ({years}). Pass release_year to choose one."
+            )
+
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            UPDATE movies SET rating = round(%(rating)s::numeric, 1)
+            WHERE id = %(id)s
+            RETURNING title, release_year, genre, description, rating::float AS rating
+            """,
+            {"rating": rating, "id": matches[0]["id"]},
+        )
+        return await cur.fetchone()
 
 
 @mcp.resource(
