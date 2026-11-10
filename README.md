@@ -1,133 +1,148 @@
 # MCP Chat
 
-MCP Chat is a command-line interface application that enables interactive chat capabilities with AI models through the Anthropic API. The application answers questions about 1980s movies stored in PostgreSQL and supports movie mentions, command-based prompts, and extensible tool integrations via the MCP (Model Control Protocol) architecture.
+MCP Chat is a command-line chat app for asking Claude about 100 popular movies from the 1980s. The movies are stored in PostgreSQL and served to the app by an MCP (Model Context Protocol) server, which gives Claude tools to look movies up and change their ratings. You can mention movies with `@`, and summarize a movie's description with a `/` command.
 
 ## Prerequisites
 
-- Python 3.9+
-- Anthropic API Key
+- Python 3.10+
+- Docker (for the PostgreSQL database)
+- An Anthropic API key
 
 ## Setup
 
-### Step 1: Configure the environment variables
+### 1. Configure the environment
 
-1. Create or edit the `.env` file in the project root and verify that the following variables are set correctly:
+Create a `.env` file in the project root:
 
 ```
-ANTHROPIC_API_KEY=""  # Enter your Anthropic API secret key
+ANTHROPIC_API_KEY=""  # Your Anthropic API secret key
 CLAUDE_MODEL=""       # The Claude model ID to use
 DATABASE_URL="postgresql://mcp:mcp@localhost:5433/mcp_docs"
+USE_UV=1              # 1 to start the MCP server with uv, 0 to use plain python
 ```
 
-### Step 1b: Start the PostgreSQL database
+The MCP server loads `.env` itself, so `DATABASE_URL` only needs to be set there.
 
-Documents are stored in PostgreSQL, run with Docker Compose:
+### 2. Start the database
 
 ```bash
 docker compose up -d
 ```
 
-On its first start the container runs `db/init.sql`, which creates the `movies` table and adds 100 popular 1980s movies (title, year, genre, description and a random 0–10 rating). The database is exposed on host port **5433** so it doesn't clash with a local Postgres on 5432.
+On first start, the container runs `db/init.sql`, which creates the `movies` table and fills it with 100 movies, 10 from each year from 1980 to 1989. Each movie has a title, release year, genre, a plot summary of more than 100 words, and a rating from 0 to 10.
 
-### Step 2: Install dependencies
+- **Ratings are random.** Postgres generates them when the script runs, so every fresh database gets different ratings.
+- **Port 5433.** The database is exposed on host port 5433, not the usual 5432, so it doesn't clash with a local Postgres.
 
-#### Option 1: Setup with uv (Recommended)
+### 3. Install dependencies
 
-[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver.
-
-1. Install uv, if not already installed:
-
-```bash
-pip install uv
-```
-
-2. Create and activate a virtual environment:
+With [uv](https://github.com/astral-sh/uv) (recommended):
 
 ```bash
 uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install dependencies:
-
-```bash
 uv pip install -e .
 ```
 
-4. Run the project
-
-```bash
-uv run main.py
-```
-
-#### Option 2: Setup without uv
-
-1. Create and activate a virtual environment:
+Without uv:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e .
 ```
 
-2. Install dependencies:
+### 4. Run
 
 ```bash
-pip install anthropic python-dotenv prompt-toolkit "mcp[cli]>=1.8.0" "psycopg[binary,pool]>=3.2"
+uv run main.py   # or: python main.py
 ```
 
-3. Run the project
+To connect more MCP servers alongside the movie server, pass their scripts as arguments. Each one is started with `uv run <script>`:
 
 ```bash
-python main.py
+uv run main.py other_server.py
 ```
 
 ## Usage
 
-### Basic Interaction
+### Chat
 
-Simply type your message and press Enter to chat with the model.
-
-### Movie Mentions
-
-Use the @ symbol followed by a movie title to include that movie's details in your query. Titles can contain spaces, and matching ignores case:
+Type a message and press Enter. Claude can look movies up and change their ratings on its own:
 
 ```
-> Tell me about @Back to the Future
+> What's the rating of Die Hard?
+> Set the rating of The Goonies to 8.5
 ```
 
-You can also ask Claude to look up a movie or change its rating; only the rating can be edited.
+Only ratings can be changed.
+
+### Mentioning movies
+
+Put `@` before a movie title to include that movie's details in your message. Titles can contain spaces, matching ignores case, and you can mention several movies at once:
+
+```
+> Compare @Back to the Future with @Back to the Future Part II
+```
 
 ### Commands
 
-Use the / prefix to execute commands defined in the MCP server:
+Type `/` to run a prompt defined by the MCP server:
 
 ```
 > /summarize_description Ferris Bueller's Day Off
 ```
 
-`/summarize_description` shows the movie's description in 50 words or fewer; the stored description is not changed. Commands and movie titles auto-complete when you press Tab.
+`/summarize_description` has Claude summarize the movie's description in 50 words or fewer. The summary is only shown; the stored description doesn't change.
+
+Commands and movie titles autocomplete with Tab, after `/summarize_description ` and after `@`.
+
+## What the MCP server provides
+
+| Kind | Name | What it does |
+| --- | --- | --- |
+| Tool | `get_movie_by_title` | Looks up movies by title, ignoring case. Returns exact matches if there are any, otherwise up to 20 movies whose title contains the text. |
+| Tool | `update_movie_rating` | Sets a movie's rating (0–10, stored with one decimal). Needs the exact title, plus `release_year` if several movies share it. |
+| Resource | `movies://titles` | Every movie title, as JSON. |
+| Resource | `movies://titles/{title}` | A movie's details, as plain text. The title must be URL-encoded (for example `Die%20Hard`). |
+| Prompt | `summarize_description` | Takes a `title` and asks Claude to summarize that movie's description in 50 words or fewer. |
 
 ## Development
 
-### Adding New Movies
+### Adding or changing movies
 
-Insert rows into the `movies` table, for example:
+Insert rows into the `movies` table. `release_year` must be between 1980 and 1989, and a title can only appear once per year:
 
 ```bash
-docker compose exec db psql -U mcp mcp_docs -c "INSERT INTO movies (title, release_year, genre, description, rating) VALUES ('Tremors', 1990, 'Horror', 'Desert townsfolk battle giant underground worms.', 7.5)"
+docker compose exec db psql -U mcp mcp_docs -c "INSERT INTO movies (title, release_year, genre, description, rating) VALUES ('Honey, I Shrunk the Kids', 1989, 'Family', 'An inventor accidentally shrinks his children and the neighbors'' kids, who must cross the backyard to get home.', 7.5)"
 ```
 
-Note that `release_year` must be between 1980 and 1989.
+New movies can be mentioned with `@` straight away. Tab autocomplete only picks them up after you restart the chat app.
 
-To change the seed data, edit `db/init.sql`. It only runs automatically when the volume is empty; you can run it again with `docker compose exec -T db psql -U mcp mcp_docs < db/init.sql`, or reset everything with `docker compose down -v`.
+The seed data lives in `db/init.sql`, which only runs automatically on an empty database. To apply changes to it:
 
-### Implementing MCP Features
+```bash
+docker compose down -v && docker compose up -d
+```
 
-To fully implement the MCP features:
+This deletes the current data, including any rating changes. To keep it, re-run the script on the existing database instead. Only movies that aren't already there are added:
 
-1. Complete the TODOs in `mcp_server.py`
-2. Implement the missing functionality in `mcp_client.py`
+```bash
+docker compose exec -T db psql -U mcp mcp_docs < db/init.sql
+```
 
-### Linting and Typing Check
+### Testing the server on its own
 
-There are no lint or type checks implemented.
+```bash
+uv run mcp_client.py           # connect to the server and print its tools
+uv run mcp dev mcp_server.py   # open the server in the MCP Inspector
+```
+
+### Linting and type checks
+
+None are set up.
+
+## Troubleshooting
+
+- **`role "mcp" does not exist` or connection errors:** check that `DATABASE_URL` uses port 5433 and that the container is running (`docker compose ps`). Port 5432 may belong to a different, local Postgres.
+- **A traceback appears after a typo in a movie title:** the server logs the "not found" error to the terminal before the app prints its short error message. The chat keeps running.
